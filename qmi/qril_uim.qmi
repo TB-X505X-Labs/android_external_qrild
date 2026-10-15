@@ -170,7 +170,7 @@ struct card_res_t {
 response read_transparent_resp {
 	required qmi_response_type_v01 res = 0x02;
 	optional card_res_t card_res = 0x10;
-	optional u8 read_result(2) = 0x11;
+	optional u8 read_result(u16) = 0x11;
 	optional u32 resp_in_ind = 0x12;
 	optional u8 encrypted = 0x13;
 } = 0x0020;
@@ -186,7 +186,7 @@ request read_record_req {
 response read_record_resp {
 	required qmi_response_type_v01 res = 0x02;
 	optional card_res_t card_res = 0x10;
-	optional u8 read_result(2) = 0x11;
+	optional u8 read_result(u16) = 0x11;
 	optional u8 additional_read_result(2) = 0x12;
 	optional u32 resp_in_ind = 0x13;
 } = 0x0021;

@@ -5,6 +5,7 @@ const QMI_DMS_GET_MSISDN = 0x24;
 const QMI_DMS_GET_IDS = 0x25;
 const QMI_DMS_GET_OPERATING_MODE = 0x2D;
 const QMI_DMS_SET_OPERATING_MODE = 0x2E;
+const QMI_DMS_UIM_GET_ICCID = 0x3C;
 const QMI_DMS_UIM_GET_IMSI = 0x43;
 
 enum QmiDmsOperatingMode {
@@ -67,3 +68,8 @@ response uim_get_imsi {
 	required qmi_response_type_v01 res = 0x02;
 	optional string imsi = 0x01;
 } = 0x0043;
+
+response uim_get_iccid {
+	required qmi_response_type_v01 res = 0x02;
+	optional string iccid = 0x01;
+} = 0x003C;
