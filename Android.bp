@@ -1,0 +1,92 @@
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+
+soong_namespace {
+}
+
+cc_library_static {
+    name: "libqrtr_qril",
+    vendor: true,
+    srcs: [
+        "qrtr/lib/logging.c",
+        "qrtr/lib/qmi.c",
+        "qrtr/lib/qrtr.c",
+    ],
+    local_include_dirs: ["qrtr/src"],
+    export_include_dirs: ["qrtr/lib"],
+    cflags: [
+        "-Wno-error",
+        "-Wno-unused-parameter",
+    ],
+}
+
+cc_library_static {
+    name: "libqril",
+    vendor: true,
+    srcs: [
+        "libqril/libqril.c",
+        "libqril/libqril_events.c",
+        "libqril/libqril_messages.c",
+        "libqril/libqril_qmi.c",
+        "libqril/libqril_services.c",
+        "libqril/lock_tracker.c",
+        "libqril/q_log.c",
+        "libqril/qmi_tlv.c",
+        "libqril/timespec.c",
+        "libqril/util.c",
+        "libqril/workqueue.c",
+        "libqril/qmi/qmi_dms.c",
+        "libqril/qmi/qmi_dpm.c",
+        "libqril/qmi/qmi_nas.c",
+        "libqril/qmi/qmi_uim.c",
+        "libqril/qmi/qmi_wda.c",
+        "libqril/qmi/qmi_wds.c",
+        "libqril/qmi/qmi_wms.c",
+    ],
+    local_include_dirs: ["libqril"],
+    export_include_dirs: [
+        "libqril/lib",
+        "libqril/qmi",
+    ],
+    static_libs: ["libqrtr_qril"],
+    export_static_lib_headers: ["libqrtr_qril"],
+    cflags: [
+        "-Wno-error",
+        "-Wno-unused-parameter",
+        "-Wno-missing-braces",
+    ],
+}
+
+cc_binary {
+    name: "android.hardware.radio-service.qrild",
+    vendor: true,
+    relative_install_path: "hw",
+    srcs: [
+        "src/qmi_glue.c",
+        "src/radio.cc",
+    ],
+    local_include_dirs: ["src"],
+    static_libs: [
+        "libqril",
+        "libqrtr_qril",
+    ],
+    shared_libs: [
+        "libbinder_ndk",
+        "liblog",
+        "android.hardware.radio-V5-ndk",
+        "android.hardware.radio.config-V5-ndk",
+        "android.hardware.radio.data-V5-ndk",
+        "android.hardware.radio.messaging-V5-ndk",
+        "android.hardware.radio.modem-V5-ndk",
+        "android.hardware.radio.network-V5-ndk",
+        "android.hardware.radio.sim-V5-ndk",
+        "android.hardware.radio.voice-V5-ndk",
+    ],
+    cflags: [
+        "-Wno-unused-parameter",
+        "-Wno-deprecated-declarations",
+    ],
+    init_rc: ["device/android.hardware.radio-service.qrild.rc"],
+    vintf_fragments: ["device/android.hardware.radio-service.qrild.xml"],
+}
