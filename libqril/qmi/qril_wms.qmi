@@ -1,0 +1,96 @@
+package wms 0x05;
+
+const QMI_WMS_SET_EVENT_REPORT = 0x01;
+const QMI_WMS_EVENT_REPORT = 0x01;
+const QMI_WMS_RAW_SEND = 0x20;
+const QMI_WMS_SET_ROUTES = 0x32;
+const QMI_WMS_GET_SMSC_ADDRESS = 0x34;
+const QMI_WMS_SEND_ACK = 0x37;
+
+const QMI_WMS_MESSAGE_FORMAT_GSM_WCDMA_POINT_TO_POINT = 0x06;
+const QMI_WMS_MESSAGE_PROTOCOL_WCDMA = 0x01;
+const QMI_WMS_RECEIPT_ACTION_TRANSFER_ONLY = 0x02;
+const QMI_WMS_STORAGE_TYPE_NONE = 0xFF;
+
+request set_event_report_req {
+	optional u8 new_mt_message_indicator = 0x10;
+} = 0x0001;
+
+response set_event_report_resp {
+	required qmi_response_type_v01 res = 0x02;
+} = 0x0001;
+
+struct mt_message {
+	u8 storage_type;
+	u32 storage_index;
+};
+
+struct transfer_route_mt_message {
+	u8 ack_indicator;
+	u32 transaction_id;
+	u8 format;
+	u8 *data(u16)[256];
+};
+
+indication event_report_ind {
+	optional mt_message mt = 0x10;
+	optional transfer_route_mt_message transfer_route = 0x11;
+	optional u8 message_mode = 0x12;
+} = 0x0001;
+
+struct route {
+	u8 message_type;
+	u8 message_class;
+	u8 storage;
+	u8 receipt_action;
+};
+
+request set_routes_req {
+	required route routes(u16) = 0x01;
+	optional u8 transfer_status_report = 0x10;
+} = 0x0032;
+
+response set_routes_resp {
+	required qmi_response_type_v01 res = 0x02;
+} = 0x0032;
+
+struct raw_message {
+	u8 format;
+	u8 *data(u16)[256];
+};
+
+request raw_send_req {
+	required raw_message msg = 0x01;
+} = 0x0020;
+
+response raw_send_resp {
+	required qmi_response_type_v01 res = 0x02;
+	optional u16 message_id = 0x01;
+	optional u16 cause_code = 0x10;
+	optional u8 error_class = 0x11;
+} = 0x0020;
+
+struct ack_information {
+	u32 transaction_id;
+	u8 message_protocol;
+	u8 success;
+};
+
+request send_ack_req {
+	required ack_information information = 0x01;
+	optional u8 failure_cause = 0x10;
+} = 0x0037;
+
+response send_ack_resp {
+	required qmi_response_type_v01 res = 0x02;
+} = 0x0037;
+
+struct smsc_address {
+	u8 type[3];
+	u8 *address(u8)[32];
+};
+
+response get_smsc_address_resp {
+	required qmi_response_type_v01 res = 0x02;
+	optional smsc_address smsc = 0x01;
+} = 0x0034;
