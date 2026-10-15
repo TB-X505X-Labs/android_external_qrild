@@ -174,6 +174,9 @@ class RadioConfig : public RadioConfigBase {
         config::SimPortInfo port;
         bool present = glue_get_card(&c) == 0 && c.present;
         slot.cardState = present ? sim::CardStatus::STATE_PRESENT : sim::CardStatus::STATE_ABSENT;
+        char iccid[64] = "";
+        if (present) glue_get_iccid(iccid, sizeof(iccid));
+        port.iccId = iccid;
         port.logicalSlotId = 0;
         port.portActive = true;
         slot.portInfo = {port};
@@ -297,6 +300,12 @@ class RadioSim : public RadioSimBase {
         cs.gsmUmtsSubscriptionAppIndex = -1;
         cs.cdmaSubscriptionAppIndex = -1;
         cs.imsSubscriptionAppIndex = -1;
+        if (cs.cardState == sim::CardStatus::STATE_PRESENT) {
+            char iccid[64] = "";
+            glue_get_iccid(iccid, sizeof(iccid));
+            cs.iccid = iccid;
+            ALOGI("iccid %s", iccid);
+        }
         cs.slotMap.physicalSlotId = 0;
         cs.slotMap.portId = 0;
 
@@ -449,8 +458,87 @@ class RadioNetwork : public RadioNetworkBase {
     }
 };
 
+namespace messaging = radio::messaging;
+
+static std::vector<uint8_t> hexToBytes(const std::string& hex) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i + 1 < hex.size(); i += 2)
+        out.push_back(static_cast<uint8_t>(std::stoi(hex.substr(i, 2), nullptr, 16)));
+    return out;
+}
+
+class RadioMessaging : public RadioMessagingBase {
+    ::ndk::ScopedAStatus doSend(int32_t serial, const messaging::GsmSmsMessage& m, bool more) {
+        std::vector<uint8_t> raw = m.smscPdu.empty() ? std::vector<uint8_t>{0} : hexToBytes(m.smscPdu);
+        std::vector<uint8_t> tpdu = hexToBytes(m.pdu);
+        raw.insert(raw.end(), tpdu.begin(), tpdu.end());
+
+        int ref = 0, cause = -1;
+        int rc = glue_sms_send(raw.data(), raw.size(), &ref, &cause);
+        messaging::SendSmsResult res;
+        res.messageRef = ref;
+        res.errorCode = rc ? cause : -1;
+        RadioError err = RadioError::NONE;
+        if (rc) err = rc < 0 ? RadioError::INTERNAL_ERR : RadioError::GENERIC_FAILURE;
+        if (mResp) {
+            if (more)
+                mResp->sendSmsExpectMoreResponse(rspInfo(serial, err), res);
+            else
+                mResp->sendSmsResponse(rspInfo(serial, err), res);
+        }
+        return ::ndk::ScopedAStatus::ok();
+    }
+
+  public:
+    void newSms(const uint8_t* pdu, int len) {
+        if (mInd)
+            mInd->newSms(RadioIndicationType::UNSOLICITED, std::vector<uint8_t>(pdu, pdu + len));
+    }
+    ::ndk::ScopedAStatus sendSms(int32_t in_serial, const messaging::GsmSmsMessage& in_message) override {
+        return doSend(in_serial, in_message, false);
+    }
+    ::ndk::ScopedAStatus sendSmsExpectMore(int32_t in_serial,
+                                           const messaging::GsmSmsMessage& in_message) override {
+        return doSend(in_serial, in_message, true);
+    }
+    ::ndk::ScopedAStatus acknowledgeLastIncomingGsmSms(
+            int32_t in_serial, bool in_success, messaging::SmsAcknowledgeFailCause in_cause) override {
+        int rc = glue_sms_ack(in_success);
+        if (mResp)
+            mResp->acknowledgeLastIncomingGsmSmsResponse(
+                    rspInfo(in_serial, rc ? RadioError::MODEM_ERR : RadioError::NONE));
+        return ::ndk::ScopedAStatus::ok();
+    }
+    ::ndk::ScopedAStatus getSmscAddress(int32_t in_serial) override {
+        char smsc[64];
+        int rc = glue_get_smsc(smsc, sizeof(smsc));
+        if (mResp)
+            mResp->getSmscAddressResponse(rspInfo(in_serial, rc ? RadioError::MODEM_ERR : RadioError::NONE),
+                                          smsc);
+        return ::ndk::ScopedAStatus::ok();
+    }
+    ::ndk::ScopedAStatus reportSmsMemoryStatus(int32_t in_serial, bool in_available) override {
+        if (mResp) mResp->reportSmsMemoryStatusResponse(rspInfo(in_serial));
+        return ::ndk::ScopedAStatus::ok();
+    }
+    ::ndk::ScopedAStatus setGsmBroadcastActivation(int32_t in_serial, bool in_activate) override {
+        if (mResp) mResp->setGsmBroadcastActivationResponse(rspInfo(in_serial));
+        return ::ndk::ScopedAStatus::ok();
+    }
+    ::ndk::ScopedAStatus setGsmBroadcastConfig(
+            int32_t in_serial, const std::vector<messaging::GsmBroadcastSmsConfigInfo>& in_configInfo) override {
+        if (mResp) mResp->setGsmBroadcastConfigResponse(rspInfo(in_serial));
+        return ::ndk::ScopedAStatus::ok();
+    }
+};
+
 static std::shared_ptr<RadioSim> gSim;
 static std::shared_ptr<RadioNetwork> gNetwork;
+static std::shared_ptr<RadioMessaging> gMessaging;
+
+static void onNewSms(const uint8_t* pdu, int len) {
+    if (gMessaging) gMessaging->newSms(pdu, len);
+}
 
 static void onServing() {
     if (gNetwork) gNetwork->servingChanged();
@@ -472,7 +560,7 @@ static void addService(const std::shared_ptr<T>& svc, const std::string& instanc
 }
 
 int main() {
-    static const glue_callbacks cb = {onServing, onSignal, onSim};
+    static const glue_callbacks cb = {onServing, onSignal, onSim, onNewSms};
 
     ABinderProcess_setThreadPoolMaxThreadCount(4);
     ALOGI("starting, waiting for the modem");
@@ -483,7 +571,7 @@ int main() {
     gSim = ndk::SharedRefBase::make<RadioSim>();
     gNetwork = ndk::SharedRefBase::make<RadioNetwork>();
     auto data = ndk::SharedRefBase::make<RadioDataBase>();
-    auto msg = ndk::SharedRefBase::make<RadioMessagingBase>();
+    gMessaging = ndk::SharedRefBase::make<RadioMessaging>();
     auto voice = ndk::SharedRefBase::make<RadioVoiceBase>();
 
     addService(cfg, "default");
@@ -491,7 +579,7 @@ int main() {
     addService(gSim, "slot1");
     addService(gNetwork, "slot1");
     addService(data, "slot1");
-    addService(msg, "slot1");
+    addService(gMessaging, "slot1");
     addService(voice, "slot1");
 
     ABinderProcess_startThreadPool();

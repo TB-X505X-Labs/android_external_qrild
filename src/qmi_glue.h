@@ -58,6 +58,7 @@ struct glue_callbacks {
     void (*serving_changed)(void);
     void (*signal_changed)(void);
     void (*sim_changed)(void);
+    void (*new_sms)(const uint8_t *pdu, int len);
 };
 
 int glue_init(const struct glue_callbacks *cb);
@@ -67,10 +68,14 @@ int glue_set_mode_pref_lte(void);
 int glue_get_ids(char *imei, char *imeisv, int len);
 int glue_get_revision(char *rev, int len);
 int glue_get_imsi(char *imsi, int len);
+int glue_get_iccid(char *iccid, int len);
 int glue_get_msisdn(char *msisdn, int len);
 int glue_get_signal(struct glue_signal *s);
 int glue_get_serving(struct glue_serving *s);
 int glue_get_card(struct glue_card *c);
+int glue_sms_send(const uint8_t *pdu, int len, int *message_ref, int *cause);
+int glue_sms_ack(bool success);
+int glue_get_smsc(char *smsc, int len);
 int glue_get_plmn_name(int mcc, int mnc, char *long_name, char *short_name, int len);
 
 #ifdef __cplusplus

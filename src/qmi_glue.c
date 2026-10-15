@@ -8,10 +8,34 @@
 #include "qmi_dms.h"
 #include "qmi_nas.h"
 #include "qmi_uim.h"
+#include "qmi_wms.h"
 
 #include "qmi_glue.h"
 
 static struct glue_callbacks callbacks;
+static uint32_t sms_transaction_id;
+static bool sms_needs_ack;
+
+static void handle_wms_event(struct qmi_header *hdr, size_t len)
+{
+	struct wms_event_report_ind *ind = WMS_EVENT_REPORT_IND_NEW;
+	int rc;
+
+	rc = qmi_decode_message2(hdr, len, ind);
+	if (rc < 0 || !ind->transfer_route_valid) {
+		log_error("WMS event report without a transferred message (%d)", rc);
+		free(ind);
+		return;
+	}
+
+	sms_transaction_id = ind->transfer_route.transaction_id;
+	sms_needs_ack = ind->transfer_route.ack_indicator == 0;
+	log_info("New SMS: %u bytes, transaction %u, ack %d", ind->transfer_route.data_len,
+		 sms_transaction_id, sms_needs_ack);
+	if (callbacks.new_sms)
+		callbacks.new_sms(ind->transfer_route.data, ind->transfer_route.data_len);
+	free(ind);
+}
 
 static void copy_str(char *dst, int len, const char *src, uint32_t src_len)
 {
@@ -29,6 +53,9 @@ static void on_indication(void *data, enum qmi_service service, struct qmi_heade
 			callbacks.serving_changed();
 		else if (hdr->msg_id == QMI_NAS_SIGNAL_INFO_REPORT && callbacks.signal_changed)
 			callbacks.signal_changed();
+	} else if (service == QMI_SERVICE_WMS) {
+		if (hdr->msg_id == QMI_WMS_EVENT_REPORT)
+			handle_wms_event(hdr, len);
 	} else if (service == QMI_SERVICE_UIM) {
 		if (callbacks.sim_changed)
 			callbacks.sim_changed();
@@ -56,6 +83,37 @@ static int register_nas_indications(void)
 	return rc;
 }
 
+static int setup_sms(void)
+{
+	struct wms_set_routes_req *routes = WMS_SET_ROUTES_REQ_NEW;
+	struct wms_set_event_report_req *ev = WMS_SET_EVENT_REPORT_REQ_NEW;
+	int rc, i;
+
+	memset((char *)routes + sizeof(routes->hdr), 0, sizeof(*routes) - sizeof(routes->hdr));
+	routes->routes_len = 5;
+	for (i = 0; i < 5; i++) {
+		routes->routes[i].message_type = 0;
+		routes->routes[i].message_class = i;
+		routes->routes[i].storage = QMI_WMS_STORAGE_TYPE_NONE;
+		routes->routes[i].receipt_action = QMI_WMS_RECEIPT_ACTION_TRANSFER_ONLY;
+	}
+	routes->transfer_status_report_valid = true;
+	routes->transfer_status_report = 1;
+	rc = libqril_send_message_ack_sync(&routes->hdr);
+	if (rc)
+		log_error("Failed to set SMS routes: %d", rc);
+	free(routes);
+
+	memset((char *)ev + sizeof(ev->hdr), 0, sizeof(*ev) - sizeof(ev->hdr));
+	ev->new_mt_message_indicator_valid = true;
+	ev->new_mt_message_indicator = 1;
+	rc = libqril_send_message_ack_sync(&ev->hdr);
+	if (rc)
+		log_error("Failed to enable SMS event reports: %d", rc);
+	free(ev);
+	return rc;
+}
+
 int glue_init(const struct glue_callbacks *cb)
 {
 	int rc;
@@ -76,6 +134,8 @@ int glue_init(const struct glue_callbacks *cb)
 	rc = register_nas_indications();
 	if (rc)
 		log_error("Failed to register NAS indications: %d", rc);
+
+	setup_sms();
 
 	return 0;
 }
@@ -151,6 +211,38 @@ int glue_get_imsi(char *imsi, int len)
 	rc = libqril_send_basic_request_sync(QMI_SERVICE_DMS, QMI_DMS_UIM_GET_IMSI, &resp->hdr);
 	if (!rc)
 		copy_str(imsi, len, resp->imsi, resp->imsi_len);
+	free(resp);
+	return rc;
+}
+
+int glue_get_iccid(char *iccid, int len)
+{
+	static const char digits[] = "0123456789";
+	struct uim_read_transparent_req *req = UIM_READ_TRANSPARENT_REQ_NEW;
+	struct uim_read_transparent_resp *resp = UIM_READ_TRANSPARENT_RESP_NEW;
+	int rc, i, n = 0;
+
+	iccid[0] = '\0';
+	memset((char *)req + sizeof(req->hdr), 0, sizeof(*req) - sizeof(req->hdr));
+	req->session.type = 6;
+	req->file.file_id = 0x2fe2;
+	req->file.path_len = 2;
+	req->file.path[0] = 0x00;
+	req->file.path[1] = 0x3f;
+
+	rc = libqril_send_message_sync(&req->hdr, &resp->hdr);
+	if (!rc && resp->read_result_valid) {
+		for (i = 0; i < (int)resp->read_result_len && n < len - 2; i++) {
+			uint8_t lo = resp->read_result[i] & 0xf, hi = resp->read_result[i] >> 4;
+
+			if (lo < 10)
+				iccid[n++] = digits[lo];
+			if (hi < 10)
+				iccid[n++] = digits[hi];
+		}
+		iccid[n] = '\0';
+	}
+	free(req);
 	free(resp);
 	return rc;
 }
@@ -316,6 +408,68 @@ int glue_get_plmn_name(int mcc, int mnc, char *long_name, char *short_name, int 
 	snprintf(long_name, len, "%s", cached_mcc == mcc && cached_mnc == mnc ? cached_long : "");
 	snprintf(short_name, len, "%s", cached_mcc == mcc && cached_mnc == mnc ? cached_short : "");
 	free(req);
+	free(resp);
+	return rc;
+}
+
+int glue_sms_send(const uint8_t *pdu, int len, int *message_ref, int *cause)
+{
+	struct wms_raw_send_req *req = WMS_RAW_SEND_REQ_NEW;
+	struct wms_raw_send_resp *resp = WMS_RAW_SEND_RESP_NEW;
+	int rc;
+
+	if (len > (int)sizeof(req->msg.data)) {
+		free(req);
+		free(resp);
+		return -EINVAL;
+	}
+
+	memset((char *)req + sizeof(req->hdr), 0, sizeof(*req) - sizeof(req->hdr));
+	req->msg.format = QMI_WMS_MESSAGE_FORMAT_GSM_WCDMA_POINT_TO_POINT;
+	req->msg.data_len = len;
+	memcpy(req->msg.data, pdu, len);
+
+	rc = libqril_send_message_sync(&req->hdr, &resp->hdr);
+	*message_ref = resp->message_id_valid ? resp->message_id : 0;
+	*cause = resp->cause_code_valid ? resp->cause_code : -1;
+	log_info("SMS send: rc %d ref %d cause %d", rc, *message_ref, *cause);
+	free(req);
+	free(resp);
+	return rc;
+}
+
+int glue_sms_ack(bool success)
+{
+	struct wms_send_ack_req *req;
+	int rc;
+
+	if (!sms_needs_ack)
+		return 0;
+
+	req = WMS_SEND_ACK_REQ_NEW;
+	memset((char *)req + sizeof(req->hdr), 0, sizeof(*req) - sizeof(req->hdr));
+	req->information.transaction_id = sms_transaction_id;
+	req->information.message_protocol = QMI_WMS_MESSAGE_PROTOCOL_WCDMA;
+	req->information.success = success;
+	if (!success) {
+		req->failure_cause_valid = true;
+		req->failure_cause = 0;
+	}
+	rc = libqril_send_message_ack_sync(&req->hdr);
+	sms_needs_ack = false;
+	free(req);
+	return rc;
+}
+
+int glue_get_smsc(char *smsc, int len)
+{
+	struct wms_get_smsc_address_resp *resp = WMS_GET_SMSC_ADDRESS_RESP_NEW;
+	int rc;
+
+	smsc[0] = '\0';
+	rc = libqril_send_basic_request_sync(QMI_SERVICE_WMS, QMI_WMS_GET_SMSC_ADDRESS, &resp->hdr);
+	if (!rc && resp->smsc_valid)
+		copy_str(smsc, len, (const char *)resp->smsc.address, resp->smsc.address_len);
 	free(resp);
 	return rc;
 }
