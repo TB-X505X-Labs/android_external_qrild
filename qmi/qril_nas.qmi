@@ -241,6 +241,7 @@ struct network_selection_pref {
 };
 
 request set_system_prefs {
+	optional u16 mode_preference = 0x11;
 	optional network_selection_pref network_selection = 0x16;
 } = 0x0033;
 
