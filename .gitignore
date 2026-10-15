@@ -3,3 +3,4 @@ build/
 builddir/
 .vscode*
 
+device/android.hardware.radio-service.qrild

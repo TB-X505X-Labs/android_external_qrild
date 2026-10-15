@@ -1,0 +1,9 @@
+service vendor.radio-qrild /vendor/bin/qrild-start.sh
+    class main
+    user root
+    group radio system
+    seclabel u:r:su:s0
+    disabled
+
+on post-fs-data
+    start vendor.radio-qrild
