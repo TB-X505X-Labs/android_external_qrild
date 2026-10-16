@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "libqril.h"
 #include "qmi_dms.h"
@@ -143,10 +144,15 @@ int glue_init(const struct glue_callbacks *cb)
 int glue_set_online(bool online)
 {
 	struct dms_set_operating_mode_req *req = DMS_SET_OPERATING_MODE_REQ_NEW;
-	int rc;
+	int rc, tries;
 
 	req->mode = online ? 0 : 1;
-	rc = libqril_send_message_ack_sync(&req->hdr);
+	for (tries = 0; tries < 20; tries++) {
+		rc = libqril_send_message_ack_sync(&req->hdr);
+		if (rc >= 0)
+			break;
+		usleep(500000);
+	}
 	free(req);
 	return rc;
 }
